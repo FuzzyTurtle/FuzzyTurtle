@@ -33,6 +33,11 @@ internal class ClientAuth
         WebDriverWait wait = new(driver, timeout);
         wait.Until(drv => drv.Url.StartsWith(expectedUrl, StringComparison.OrdinalIgnoreCase));
     }
+    private static void WaitForEndOfUrl(IWebDriver driver, string endOfUrl, TimeSpan timeout)
+    {
+        WebDriverWait wait = new(driver, timeout);
+        wait.Until(drv => drv.Url.EndsWith(endOfUrl, StringComparison.OrdinalIgnoreCase));
+    }
 
     private static void WaitForElementVisible(IWebDriver driver, By by, TimeSpan timeout)
     {
@@ -44,16 +49,28 @@ internal class ClientAuth
     {
         _httpClient = httpClient;
         _clientOptions = clientOptions;
-        AuthTokens = JsonSerializer.Deserialize<AuthTokens>(File.ReadAllText(_clientOptions.AuthTokensFileLocation)) ??
-            new AuthTokens(
-                string.Empty,
-                string.Empty,
-                string.Empty,
-                string.Empty,
-                DateTime.MinValue,
-                string.Empty,
-                string.Empty,
-                string.Empty);
+        try
+        {
+            if (!string.IsNullOrWhiteSpace(_clientOptions.AuthTokensFileLocation) && File.Exists(_clientOptions.AuthTokensFileLocation))
+            {
+                AuthTokens = JsonSerializer.Deserialize<AuthTokens>(File.ReadAllText(_clientOptions.AuthTokensFileLocation))!;
+            }
+        }
+        catch { }
+        finally
+        {
+            AuthTokens ??= new AuthTokens()
+            {
+                Code = string.Empty,
+                Session = string.Empty,
+                TokenType = string.Empty,
+                Scope = string.Empty,
+                Expiration = DateTime.MinValue,
+                RefreshToken = string.Empty,
+                AccessToken = string.Empty,
+                IdToken = string.Empty,
+            };
+        }
     }
 
     public async Task<bool> RefreshAuthAsync(CancellationToken cancellationToken)
@@ -110,7 +127,8 @@ internal class ClientAuth
 
 
             // Accept Terms Page
-            WaitForUrl(driver, "https://sws-gateway.schwab.com/ui/host/#/third-party-auth/cag", TimeSpan.FromSeconds(30));
+            //WaitForUrl(driver, "https://sws-gateway.schwab.com/ui/host/#/third-party-auth/cag", TimeSpan.FromMinutes(2));
+            WaitForEndOfUrl(driver, "/#/third-party-auth/cag", TimeSpan.FromMinutes(2));
 
             IWebElement accept = driver.FindElement(By.CssSelector("#acceptTerms"));
             accept.Click();
@@ -118,13 +136,14 @@ internal class ClientAuth
             IWebElement acceptSubmit = driver.FindElement(By.CssSelector("#submit-btn"));
             acceptSubmit.Click();
 
-            WaitForElementVisible(driver, By.CssSelector("#agree-modal-btn-"), TimeSpan.FromSeconds(30));
+            WaitForElementVisible(driver, By.CssSelector("#agree-modal-btn-"), TimeSpan.FromMinutes(2));
             IWebElement agreemodal = driver.FindElement(By.CssSelector("#agree-modal-btn-"));
             agreemodal.Click();
 
 
             // Select Account Page
-            WaitForUrl(driver, "https://sws-gateway.schwab.com/ui/host/#/third-party-auth/account", TimeSpan.FromSeconds(30));
+            //WaitForUrl(driver, "https://sws-gateway.schwab.com/ui/host/#/third-party-auth/account", TimeSpan.FromMinutes(2));
+            WaitForEndOfUrl(driver, "/#/third-party-auth/account", TimeSpan.FromMinutes(2));
 
             IWebElement checkbox = driver.FindElement(By.CssSelector("#form-container > div.form-group > label > input"));
             if (!checkbox.Selected)
@@ -137,14 +156,15 @@ internal class ClientAuth
 
 
             // Confirm Page
-            WaitForUrl(driver, "https://sws-gateway.schwab.com/ui/host/#/third-party-auth/confirmation", TimeSpan.FromSeconds(30));
+            //WaitForUrl(driver, "https://sws-gateway.schwab.com/ui/host/#/third-party-auth/confirmation", TimeSpan.FromMinutes(2));
+            WaitForEndOfUrl(driver, "/#/third-party-auth/confirmation", TimeSpan.FromMinutes(2));
 
             IWebElement confirmSubmit = driver.FindElement(By.CssSelector("#cancel-btn"));
             confirmSubmit.Click();
 
 
             // Callback Page
-            WaitForUrl(driver, _clientOptions.DeveloperAppCallbackUrl, TimeSpan.FromSeconds(30));
+            WaitForUrl(driver, _clientOptions.DeveloperAppCallbackUrl, TimeSpan.FromMinutes(2));
 
             string url = driver.Url;
             Uri uri = new(url);

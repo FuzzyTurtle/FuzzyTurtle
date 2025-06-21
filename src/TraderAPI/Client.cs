@@ -26,9 +26,10 @@ public class Client
 
     public async Task<HttpResponseMessage> PriceHistoryAsync(string symbol, string periodType, int period, string frequencyType, int frequency, long startDate, long endDate, bool needExtendedHoursData, bool needPreviousClose, CancellationToken cancellationToken)
     {
+        await _clientAuth.RefreshAuthAsync(cancellationToken);
+
         string path = "/pricehistory";
 
-        // TODO: clean up - don't add items that are empty/missing
         Dictionary<string, string> query = new()
         {
             ["symbol"] = symbol,
@@ -36,11 +37,19 @@ public class Client
             ["period"] = period.ToString(),
             ["frequencyType"] = frequencyType,
             ["frequency"] = frequency.ToString(),
-            ["startDate"] = startDate.ToString(),
-            ["endDate"] = endDate.ToString(),
             ["needExtendedHoursData"] = needExtendedHoursData.ToString(),
             ["needPreviousClose"] = needPreviousClose.ToString(),
         };
+
+        if (startDate > 0)
+        {
+            query["startDate"] = startDate.ToString();
+        }
+
+        if (endDate > 0)
+        {
+            query["endDate"] = endDate.ToString();
+        }
 
         string queryString = string.Join("&", query.Select(kvp => $"{Uri.EscapeDataString(kvp.Key)}={Uri.EscapeDataString(kvp.Value)}"));
         string url = $"{MarketDataUrl}{path}?{queryString}";

@@ -7,11 +7,11 @@
   </PropertyGroup>
   <ItemGroup>
     <PackageVersion Include="DotNetSeleniumExtras.WaitHelpers" Version="3.11.0" />
-    <PackageVersion Include="Microsoft.Extensions.Configuration" Version="9.0.5" />
-    <PackageVersion Include="Microsoft.Extensions.Configuration.Binder" Version="9.0.5" />
+    <PackageVersion Include="Microsoft.Extensions.Configuration" Version="9.0.6" />
+    <PackageVersion Include="Microsoft.Extensions.Configuration.Binder" Version="9.0.6" />
     <PackageVersion Include="Microsoft.Extensions.Configuration.EnvironmentVariables" Version="9.0.5" />
-    <PackageVersion Include="Microsoft.Extensions.Configuration.FileExtensions" Version="9.0.5" />
-    <PackageVersion Include="Microsoft.Extensions.Configuration.Json" Version="9.0.5" />
+    <PackageVersion Include="Microsoft.Extensions.Configuration.FileExtensions" Version="9.0.6" />
+    <PackageVersion Include="Microsoft.Extensions.Configuration.Json" Version="9.0.6" />
     <PackageVersion Include="Microsoft.Extensions.DependencyInjection" Version="9.0.5" />
     <PackageVersion Include="Microsoft.Extensions.Http" Version="9.0.5" />
     <PackageVersion Include="Microsoft.Extensions.Logging" Version="9.0.5" />
@@ -21,7 +21,7 @@
     <PackageVersion Include="Microsoft.Extensions.Options.ConfigurationExtensions" Version="9.0.5" />
     <PackageVersion Include="Selenium.Support" Version="4.33.0" />
     <PackageVersion Include="Selenium.WebDriver" Version="4.33.0" />
-    <PackageVersion Include="System.CommandLine" Version="2.0.0-beta4.22272.1" />
-    <PackageVersion Include="System.CommandLine.NamingConventionBinder" Version="2.0.0-beta4.22272.1" />
+    <PackageVersion Include="System.CommandLine" Version="2.0.0-beta5.25306.1" />
+    <PackageVersion Include="System.CommandLine.NamingConventionBinder" Version="2.0.0-beta5.25306.1" />
   </ItemGroup>
 </Project>
