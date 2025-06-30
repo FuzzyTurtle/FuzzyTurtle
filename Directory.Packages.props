@@ -23,5 +23,6 @@
     <PackageVersion Include="Selenium.WebDriver" Version="4.33.0" />
     <PackageVersion Include="System.CommandLine" Version="2.0.0-beta5.25306.1" />
     <PackageVersion Include="System.CommandLine.NamingConventionBinder" Version="2.0.0-beta5.25306.1" />
+    <PackageVersion Include="System.Threading.RateLimiting" Version="9.0.6" />
   </ItemGroup>
 </Project>
