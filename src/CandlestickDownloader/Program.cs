@@ -144,6 +144,12 @@ internal class Program
                         break;
                     }
 
+                    if(history.Candles.Count <= 1)
+                    {
+                        s_logger.LogWarning("Insufficient data for {Symbol} on {StartDate}: {Count} candle(s) found", symbol, DateTimeOffset.FromUnixTimeMilliseconds(startDate), history.Candles.Count);
+                        continue;
+                    }
+
                     WriteData(responseContent, options.DataFolder, symbol, startDate);
                 }
                 else
