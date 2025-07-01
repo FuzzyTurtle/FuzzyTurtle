@@ -1,6 +1,7 @@
 ﻿using System.CommandLine;
 using System.Text.Json;
 using System.Threading.RateLimiting;
+using System.Threading.Tasks;
 
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
@@ -15,22 +16,6 @@ namespace CandlestickDownloader;
 
 internal class Program
 {
-    private static ILogger s_logger = NullLogger<Program>.Instance;
-    private static readonly RateLimiter RateLimiter = new TokenBucketRateLimiter(
-        new TokenBucketRateLimiterOptions
-        {
-            TokenLimit = 10,
-            QueueLimit = int.MaxValue,
-            AutoReplenishment = true,
-            QueueProcessingOrder = QueueProcessingOrder.OldestFirst,
-            ReplenishmentPeriod = TimeSpan.FromSeconds(0.5),
-            TokensPerPeriod = 1
-        });
-    private static readonly JsonSerializerOptions JsonSerializerOptions = new()
-    {
-        PropertyNameCaseInsensitive = true
-    };
-
     static async Task<int> Main(string[] args)
     {
         Option<string> configFileOption = new("--config-file")
@@ -70,6 +55,23 @@ internal class Program
                 loggingBuilder.AddConsole();
             })
             .AddHttpClient()
+            .AddSingleton<JsonSerializerOptions>((_) =>
+                new JsonSerializerOptions
+                {
+                    PropertyNameCaseInsensitive = true,
+                    WriteIndented = true,
+                })
+            .AddSingleton<RateLimiter>((_) =>
+                new TokenBucketRateLimiter(
+                    new TokenBucketRateLimiterOptions
+                    {
+                        TokenLimit = 120,
+                        QueueLimit = int.MaxValue,
+                        AutoReplenishment = true,
+                        QueueProcessingOrder = QueueProcessingOrder.OldestFirst,
+                        ReplenishmentPeriod = TimeSpan.FromSeconds(0.5),
+                        TokensPerPeriod = 1
+                    }))
             .AddSingleton((serviceProvider) => serviceProvider.GetRequiredService<IOptions<ClientOptions>>().Value)
             .AddSingleton<Client>()
             .AddSingleton<CancellationTokenSource>();
@@ -84,118 +86,167 @@ internal class Program
 
         ServiceProvider serviceProvider = services.BuildServiceProvider();
 
-        s_logger = serviceProvider.GetRequiredService<ILogger<Program>>();
+        ILogger<Program> logger = serviceProvider.GetRequiredService<ILogger<Program>>();
 
         CancellationTokenSource cancellationTokenSource = serviceProvider.GetRequiredService<CancellationTokenSource>();
         CandlestickDownloaderOptions options = serviceProvider.GetRequiredService<IOptions<CandlestickDownloaderOptions>>().Value;
         Client client = serviceProvider.GetRequiredService<Client>();
+        RateLimiter rateLimiter = serviceProvider.GetRequiredService<RateLimiter>();
+        JsonSerializerOptions jsonOptions = serviceProvider.GetRequiredService<JsonSerializerOptions>();
 
-        s_logger.LogInformation("Starting Candlestick Downloader...");
+        logger.LogInformation("Starting Candlestick Downloader...");
 
+        await DownloadAndSaveCandlesticks(
+            client,
+            options,
+            logger,
+            rateLimiter,
+            jsonOptions,
+            cancellationTokenSource.Token);
 
+        logger.LogInformation("Candlestick Downloader completed.");
+    }
+
+    private static async Task DownloadAndSaveCandlesticks(
+        Client client,
+        CandlestickDownloaderOptions options,
+        ILogger logger,
+        RateLimiter rateLimiter,
+        JsonSerializerOptions jsonOptions,
+        CancellationToken cancellationToken)
+    {
+        Directory.CreateDirectory(options.DataFolder);
 
         foreach (string symbol in options.Symbols)
         {
-            int deltaDays = 0;
+            logger.LogInformation("Downloading data for symbol: {Symbol}", symbol);
+
+            long startDate = 0;
+            long endDate = 0;
+            Dictionary<long, Candlestick> allData = new();
 
             while (true)
             {
-                long startDate = GetNewYorkOpenUnixMillis(-1 * deltaDays);
-                long endDate = startDate + 12 * 60 * 60 * 1000;
-                deltaDays++;
+                await EnsureTokenLease(rateLimiter, cancellationToken);
 
-                if (IsWeekend(startDate))
+                HttpResponseMessage data = await client.PriceHistoryAsync(symbol, "day", 10, "minute", 1, startDate, endDate, false, false, cancellationToken);
+
+                if (!data.IsSuccessStatusCode)
                 {
-                    s_logger.LogInformation("Skipping weekend date: {StartDate}", DateTimeOffset.FromUnixTimeMilliseconds(startDate));
-                    continue;
+                    break;
                 }
 
-                RateLimitLease lease = await RateLimiter.AcquireAsync(1, cancellationTokenSource.Token);
-                while (!lease.IsAcquired)
+                string responseContent = await data.Content.ReadAsStringAsync(cancellationToken);
+                CandlestickHistory? history = JsonSerializer.Deserialize<CandlestickHistory>(responseContent, jsonOptions);
+                if (history is null || history.Empty)
                 {
-                    await Task.Delay(TimeSpan.FromMilliseconds(100), cancellationTokenSource.Token);
-                    lease?.Dispose();
-                    lease = await RateLimiter.AcquireAsync(1, cancellationTokenSource.Token);
+                    break;
                 }
-                lease.Dispose();
 
+                bool newData = false;
 
-                HttpResponseMessage data = await client.PriceHistoryAsync(
-                        symbol,
-                        "day",
-                        1,
-                        "minute",
-                        1,
-                        startDate,
-                        endDate,
-                        false,
-                        false,
-                        cancellationTokenSource.Token);
-
-                if (data.IsSuccessStatusCode)
+                foreach (Candlestick candle in history.Candles)
                 {
-                    s_logger.LogInformation("Successfully retrieved data for {Symbol} on {StartDate}", symbol, DateTimeOffset.FromUnixTimeMilliseconds(startDate));
-                    string responseContent = await data.Content.ReadAsStringAsync(cancellationTokenSource.Token);
-
-                    CandlestickHistory? history = JsonSerializer.Deserialize<CandlestickHistory>(responseContent, JsonSerializerOptions);
-                    if (history is null || history.Empty)
+                    if (!allData.ContainsKey(candle.DateTime))
                     {
-                        s_logger.LogWarning("No data found for {Symbol} on {StartDate}", symbol, DateTimeOffset.FromUnixTimeMilliseconds(startDate));
-                        break;
+                        allData[candle.DateTime] = candle;
+                        newData = true;
                     }
-
-                    if(history.Candles.Count <= 1)
-                    {
-                        s_logger.LogWarning("Insufficient data for {Symbol} on {StartDate}: {Count} candle(s) found", symbol, DateTimeOffset.FromUnixTimeMilliseconds(startDate), history.Candles.Count);
-                        continue;
-                    }
-
-                    WriteData(responseContent, options.DataFolder, symbol, startDate);
                 }
-                else
+
+                if (!newData)
                 {
-                    s_logger.LogError("Failed to retrieve data for {Symbol} on {StartDate}: {StatusCode} - {ReasonPhrase}", symbol, DateTimeOffset.FromUnixTimeMilliseconds(startDate), data.StatusCode, data.ReasonPhrase);
+                    break;
+                }
+
+                endDate = history.Candles.Min(c => c.DateTime);
+                endDate = DateTimeOffset.FromUnixTimeMilliseconds(endDate).AddMinutes(-1).ToUnixTimeMilliseconds();
+            }
+
+            FileInfo fileInfo = new(Path.Combine(options.DataFolder, $"{symbol.ToUpperInvariant()}.json"));
+
+            FileStream fileStream;
+
+            if (!fileInfo.Exists)
+            {
+                fileStream = fileInfo.Create();
+            }
+            else
+            {
+                fileStream = File.OpenRead(fileInfo.FullName);
+            }
+
+
+            CandlestickHistory existingHistory;
+            try
+            {
+                existingHistory = await JsonSerializer.DeserializeAsync<CandlestickHistory>(fileStream, jsonOptions, cancellationToken) ??
+                new CandlestickHistory()
+                {
+                    Candles = new List<Candlestick>(),
+                    Empty = true,
+                    Symbol = symbol,
+                };
+            }
+            catch
+            {
+                existingHistory = new CandlestickHistory()
+                {
+                    Candles = new List<Candlestick>(),
+                    Empty = true,
+                    Symbol = symbol,
+                };
+            }
+
+            fileStream.Dispose();
+
+
+            Dictionary<long, Candlestick> candlesToSave = new();
+
+            foreach (Candlestick candle in existingHistory.Candles)
+            {
+                if (!candlesToSave.ContainsKey(candle.DateTime))
+                {
+                    candlesToSave[candle.DateTime] = candle;
                 }
             }
+
+            foreach (Candlestick candle in allData.Values)
+            {
+                if (!candlesToSave.ContainsKey(candle.DateTime))
+                {
+                    candlesToSave[candle.DateTime] = candle;
+                }
+            }
+
+            CandlestickHistory saveHistory = new()
+            {
+                Candles = [.. candlesToSave.Values.OrderBy(c => c.DateTime)],
+                Empty = candlesToSave.Count == 0,
+                Symbol = symbol
+            };
+
+            await WriteData(saveHistory, fileInfo, jsonOptions);
+
         }
-
-        s_logger.LogInformation("Candlestick Downloader completed successfully.");
     }
 
-    private static void WriteData(string responseContent, string dataFolder, string symbol, long startDate)
+    private static async Task EnsureTokenLease(RateLimiter rateLimiter, CancellationToken cancellationToken)
     {
-
-
-        DateTime date = DateTimeOffset.FromUnixTimeMilliseconds(startDate).UtcDateTime;
-        string year = date.Year.ToString("D4");
-        string month = date.Month.ToString("D2");
-        string day = date.Day.ToString("D2");
-        string path = Path.Combine(dataFolder, symbol.ToUpperInvariant(), year, month);
-        string fileName = $"{symbol}-{year}-{month}-{day}.json";
-        string finalPath = Path.Combine(path, fileName);
-
-        Directory.CreateDirectory(path);
-        File.WriteAllText(finalPath, responseContent);
-
-        s_logger.LogInformation("Response content saved to {FilePath}", finalPath);
+        RateLimitLease lease = await rateLimiter.AcquireAsync(1, cancellationToken);
+        while (!lease.IsAcquired)
+        {
+            await Task.Delay(TimeSpan.FromMilliseconds(100), cancellationToken);
+            lease?.Dispose();
+            lease = await rateLimiter.AcquireAsync(1, cancellationToken);
+        }
+        lease.Dispose();
     }
 
-    private static long GetNewYorkOpenUnixMillis(int deltaDays)
+    private static async Task WriteData(CandlestickHistory candlestickHistory, FileInfo fileInfo, JsonSerializerOptions jsonOptions)
     {
-        TimeZoneInfo easternZone = TimeZoneInfo.FindSystemTimeZoneById("Eastern Standard Time");
-        DateTime nowEastern = TimeZoneInfo.ConvertTimeFromUtc(DateTime.UtcNow, easternZone);
-        DateTime deltaTime = nowEastern.Add(TimeSpan.FromDays(deltaDays));
-        DateTime openEastern = new(deltaTime.Year, deltaTime.Month, deltaTime.Day, 6, 30, 0, DateTimeKind.Unspecified);
-        DateTime openEasternUtc = TimeZoneInfo.ConvertTimeToUtc(openEastern, easternZone);
-        long unixMillis = new DateTimeOffset(openEasternUtc).ToUnixTimeMilliseconds();
-        return unixMillis;
-    }
-
-    private static bool IsWeekend(long unixMillis)
-    {
-        DateTime dateTime = DateTimeOffset.FromUnixTimeMilliseconds(unixMillis).DateTime;
-        TimeZoneInfo easternZone = TimeZoneInfo.FindSystemTimeZoneById("Eastern Standard Time");
-        DateTime easternTime = TimeZoneInfo.ConvertTimeFromUtc(dateTime, easternZone);
-        return easternTime.DayOfWeek == DayOfWeek.Saturday || easternTime.DayOfWeek == DayOfWeek.Sunday;
+        using FileStream stream = fileInfo.Open(FileMode.Truncate);
+        await stream.WriteAsync(JsonSerializer.SerializeToUtf8Bytes(candlestickHistory, jsonOptions));
+        await stream.FlushAsync();
     }
 }
